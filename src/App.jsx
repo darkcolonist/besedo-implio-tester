@@ -1,38 +1,62 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 function App() {
+  // Persistence keys
+  const STORAGE_KEY_UPLOADS = 'implio_uploads';
+  const STORAGE_KEY_CONFIG = 'implio_config';
+
+  // State for inputs
   const [apiKey, setApiKey] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  
+  // Advanced settings (hidden by default)
   const [submitUrl, setSubmitUrl] = useState('https://api.implio.com/v3/ads');
   const [fetchUrl, setFetchUrl] = useState('https://api.implio.com/v3/ads/{taskId}');
-  
-  // Sample data defaults
   const [imgId, setImgId] = useState('img_placeholder_id_001');
   const [title, setTitle] = useState('moderate this image');
-  const [imageUrl, setImageUrl] = useState('https://core-ap-southeast-1-shared-storage.s3.ap-southeast-1.amazonaws.com/apps/s3files/storage/stage/2026-05-12T05-45-48-966Z_4ada2e9c_69919149_033_4cee.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAYIJASCBUKQLHJH3C%2F20260512%2Fap-southeast-1%2Fs3%2Faws4_request&X-Amz-Date=20260512T054549Z&X-Amz-Expires=604800&X-Amz-Signature=05e88ffcf4cf351e10d7eb555630c5beed1466baa21589bb68b803536e13cac1&X-Amz-SignedHeaders=host&x-amz-checksum-mode=ENABLED&x-id=GetObject');
   
-  const [submitResult, setSubmitResult] = useState(null);
-  const [taskId, setTaskId] = useState('');
-  const [fetchResult, setFetchResult] = useState(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [uploads, setUploads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleClear = () => {
-    setSubmitResult(null);
-    setFetchResult(null);
-    setError('');
-  };
+  // Load from LocalStorage on init
+  useEffect(() => {
+    const savedConfig = localStorage.getItem(STORAGE_KEY_CONFIG);
+    if (savedConfig) {
+      const config = JSON.parse(savedConfig);
+      setApiKey(config.apiKey || '');
+      setSubmitUrl(config.submitUrl || 'https://api.implio.com/v3/ads');
+      setFetchUrl(config.fetchUrl || 'https://api.implio.com/v3/ads/{taskId}');
+    }
+
+    const savedUploads = localStorage.getItem(STORAGE_KEY_UPLOADS);
+    if (savedUploads) {
+      setUploads(JSON.parse(savedUploads));
+    }
+  }, []);
+
+  // Save Config to LocalStorage
+  useEffect(() => {
+    const config = { apiKey, submitUrl, fetchUrl };
+    localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
+  }, [apiKey, submitUrl, fetchUrl]);
+
+  // Save Uploads to LocalStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_UPLOADS, JSON.stringify(uploads));
+  }, [uploads]);
 
   const handleSubmitBatch = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    setSubmitResult(null);
 
     const payload = [
       {
-        id: imgId,
+        id: imgId || `img_${Date.now()}`,
         content: {
-          title: title,
+          title: title || 'Quick Upload',
           images: [
             { src: imageUrl }
           ]
@@ -48,34 +72,58 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}` // Or whatever Implio uses, usually X-API-Key or Bearer
+          'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify(payload)
       });
 
       const data = await response.json();
-      setSubmitResult(data);
       
-      // Auto-fill task ID if available in response
+      let taskId = '';
       if (data.accepted && data.accepted.length > 0) {
-        setTaskId(data.accepted[0].taskId);
+        taskId = data.accepted[0].taskId;
       }
+
+      // Add to table
+      const newUpload = {
+        id: imgId || `img_${Date.now()}`,
+        title: title || 'Quick Upload',
+        imageUrl: imageUrl,
+        taskId: taskId,
+        status: taskId ? 'Pending' : 'Failed',
+        timestamp: new Date().toLocaleString(),
+        result: data
+      };
+
+      setUploads([newUpload, ...uploads]);
+      
+      // Auto generate next ID to avoid collisions if not specified
+      setImgId(`img_${Date.now()}`);
     } catch (err) {
-      setError(`Failed to submit: ${err.message}. (Note: This might be due to CORS if running locally without a proxy)`);
-      // Fallback sample output for demo purposes if it fails due to CORS or network
-      console.log('Error occurred, showing sample output structure.');
+      setError(`Failed to submit: ${err.message}.`);
+      
+      // Add a failed entry for visibility if network fails
+      const failedUpload = {
+        id: imgId || `img_${Date.now()}`,
+        title: title || 'Quick Upload',
+        imageUrl: imageUrl,
+        taskId: 'N/A',
+        status: 'Error',
+        timestamp: new Date().toLocaleString(),
+        result: { error: err.message }
+      };
+      setUploads([failedUpload, ...uploads]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFetchResults = async (e) => {
-    e.preventDefault();
+  const handleFetchResults = async (upload) => {
+    if (!upload.taskId || upload.taskId === 'N/A') return;
+    
     setLoading(true);
     setError('');
-    setFetchResult(null);
-
-    const url = fetchUrl.replace('{taskId}', taskId);
+    const url = fetchUrl.replace('{taskId}', upload.taskId);
 
     try {
       const response = await fetch(url, {
@@ -86,169 +134,192 @@ function App() {
       });
 
       const data = await response.json();
-      setFetchResult(data);
+      
+      // Update table item
+      setUploads(uploads.map(u => 
+        u.taskId === upload.taskId 
+          ? { ...u, status: 'Fetched', result: data } 
+          : u
+      ));
     } catch (err) {
-      setError(`Failed to fetch results: ${err.message}. (Note: This might be due to CORS if running locally without a proxy)`);
+      setError(`Failed to fetch results for ${upload.taskId}: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
+  const clearHistory = () => {
+    if (window.confirm('Are you sure you want to clear the history?')) {
+      setUploads([]);
+    }
+  };
+
   return (
     <div className="animate-fade-in">
-      <header style={{ textAlign: 'center', marginBottom: '3rem' }}>
+      <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
         <h1>Implio Moderation Tester</h1>
         <p>A beautiful interface to test Besedo Implio API integration.</p>
       </header>
 
-      {/* Global Config */}
-      <div className="glass-panel p-6 mb-4" style={{ marginBottom: '2rem' }}>
-        <h3>Global Configuration</h3>
-        <div className="grid grid-cols-2" style={{ gap: '1rem' }}>
-          <div className="form-group">
-            <label>API Key</label>
-            <input 
-              type="password" 
-              value={apiKey} 
-              onChange={(e) => setApiKey(e.target.value)} 
-              placeholder="Enter your Implio API Key"
-            />
-          </div>
-          <div className="form-group">
-            <label>Submit URL</label>
-            <input 
-              type="text" 
-              value={submitUrl} 
-              onChange={(e) => setSubmitUrl(e.target.value)} 
-            />
-          </div>
-        </div>
-        <div className="form-group">
-          <label>Fetch Results URL (use {'{taskId}'} as placeholder)</label>
-          <input 
-            type="text" 
-            value={fetchUrl} 
-            onChange={(e) => setFetchUrl(e.target.value)} 
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2">
-        {/* Submit Section */}
-        <div className="glass-panel p-6 flex flex-col justify-between">
-          <div>
-            <h2>1. Submit Batch</h2>
-            <p style={{ marginBottom: '1.5rem' }}>Send an image for moderation.</p>
-            
-            <form onSubmit={handleSubmitBatch}>
-              <div className="form-group">
-                <label>Item ID</label>
-                <input type="text" value={imgId} onChange={(e) => setImgId(e.target.value)} />
-              </div>
-              
-              <div className="form-group">
-                <label>Title</label>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
-              </div>
-
-              <div className="form-group">
-                <label>Image URL</label>
-                <textarea 
-                  rows="4" 
-                  value={imageUrl} 
-                  onChange={(e) => setImageUrl(e.target.value)}
-                  style={{ resize: 'vertical' }}
-                />
-              </div>
-
-              <button type="submit" className="primary" disabled={loading || !apiKey}>
-                {loading ? 'Submitting...' : 'Submit to Implio'}
-              </button>
-              {!apiKey && <p style={{ color: 'var(--warning)', fontSize: '0.8rem', marginTop: '0.5rem' }}>Please enter API Key above.</p>}
-            </form>
-          </div>
-
-          {submitResult && (
-            <div className="mt-4 glass-card p-6" style={{ marginTop: '1.5rem' }}>
-              <h3>Submission Result</h3>
-              <pre><code>{JSON.stringify(submitResult, null, 2)}</code></pre>
-            </div>
-          )}
-        </div>
-
-        {/* Fetch Section */}
-        <div className="glass-panel p-6 flex flex-col justify-between">
-          <div>
-            <h2>2. Retrieve Results</h2>
-            <p style={{ marginBottom: '1.5rem' }}>Fetch moderation results using Task ID.</p>
-            
-            <form onSubmit={handleFetchResults}>
-              <div className="form-group">
-                <label>Task ID</label>
-                <input 
-                  type="text" 
-                  value={taskId} 
-                  onChange={(e) => setTaskId(e.target.value)} 
-                  placeholder="Enter or select task ID"
-                />
-              </div>
-
-              <button type="submit" className="secondary" disabled={loading || !apiKey || !taskId}>
-                {loading ? 'Fetching...' : 'Fetch Results'}
-              </button>
-            </form>
-          </div>
-
-          {fetchResult && (
-            <div className="mt-4 glass-card p-6" style={{ marginTop: '1.5rem' }}>
-              <h3>Moderation Result</h3>
-              <pre><code>{JSON.stringify(fetchResult, null, 2)}</code></pre>
-            </div>
-          )}
-
-          {/* Image Preview */}
-          {imageUrl && (
-            <div className="mt-4 glass-card p-6" style={{ marginTop: '1.5rem', textAlign: 'center' }}>
-              <h3>Image Preview</h3>
-              <img 
-                src={imageUrl} 
-                alt="To be moderated" 
-                style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '8px', marginTop: '0.5rem' }}
-                onError={(e) => e.target.style.display = 'none'}
+      {/* Main Form */}
+      <div className="glass-panel p-6" style={{ marginBottom: '2rem' }}>
+        <form onSubmit={handleSubmitBatch}>
+          <div className="grid grid-cols-2" style={{ gap: '1rem' }}>
+            <div className="form-group">
+              <label>API Key</label>
+              <input 
+                type="password" 
+                value={apiKey} 
+                onChange={(e) => setApiKey(e.target.value)} 
+                placeholder="Enter your Implio API Key"
+                required
               />
             </div>
+            <div className="form-group">
+              <label>Image URL</label>
+              <input 
+                type="text" 
+                value={imageUrl} 
+                onChange={(e) => setImageUrl(e.target.value)} 
+                placeholder="images.google.com/sample.png"
+                required
+              />
+            </div>
+          </div>
+
+          {/* Advanced Toggle */}
+          <div style={{ textAlign: 'right', marginBottom: '1rem' }}>
+            <button 
+              type="button" 
+              className="secondary" 
+              style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }}
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              {showAdvanced ? '[ Hide Advanced ]' : '[ Advanced ]'}
+            </button>
+          </div>
+
+          {/* Advanced Fields */}
+          {showAdvanced && (
+            <div className="glass-card p-6 mb-4 animate-fade-in" style={{ marginBottom: '1.5rem', background: 'rgba(0,0,0,0.2)' }}>
+              <h3>Advanced Settings</h3>
+              <div className="grid grid-cols-2" style={{ gap: '1rem' }}>
+                <div className="form-group">
+                  <label>Submit URL</label>
+                  <input type="text" value={submitUrl} onChange={(e) => setSubmitUrl(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Fetch URL (use {'{taskId}'} as placeholder)</label>
+                  <input type="text" value={fetchUrl} onChange={(e) => setFetchUrl(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Item ID</label>
+                  <input type="text" value={imgId} onChange={(e) => setImgId(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Title</label>
+                  <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
+                </div>
+              </div>
+            </div>
           )}
-        </div>
+
+          <div style={{ textAlign: 'center' }}>
+            <button type="submit" className="primary" style={{ minWidth: '200px' }} disabled={loading || !apiKey || !imageUrl}>
+              {loading ? 'Processing...' : 'Submit to Implio'}
+            </button>
+          </div>
+        </form>
       </div>
 
       {/* Error Display */}
       {error && (
-        <div className="glass-panel p-6" style={{ marginTop: '2rem', borderColor: 'var(--error)' }}>
-          <h3 style={{ color: 'var(--error)' }}>Error / Info</h3>
-          <p style={{ color: 'var(--text-color)' }}>{error}</p>
-          <div style={{ marginTop: '1rem' }}>
-            <p style={{ fontSize: '0.9rem' }}>Since you are testing locally, if you get a CORS error, you might need to use a browser extension to disable CORS or set up a proxy. Here are the sample outputs for your reference:</p>
-            <details style={{ marginTop: '0.5rem' }}>
-              <summary style={{ cursor: 'pointer', color: 'var(--accent-primary)' }}>View Sample Output Structure</summary>
-              <pre style={{ marginTop: '0.5rem' }}><code>{`// Sample Submit Output
-{
-  "batchId": "6e86424a-68dc-4d65-b16b-de4cccb54e6c",
-  "accepted": [
-    {
-      "id": "img_placeholder_id_001",
-      "taskId": "6cb13564-1551-4f79-afdb-ba06d2097f35"
-    }
-  ],
-  "rejected": []
-}`}</code></pre>
-            </details>
-          </div>
+        <div className="glass-panel p-6" style={{ marginBottom: '2rem', borderColor: 'var(--error)' }}>
+          <p style={{ color: 'var(--error)', margin: 0 }}>{error}</p>
         </div>
       )}
 
-      {/* Action Buttons */}
-      <div style={{ textAlign: 'center', marginTop: '2rem' }}>
-        <button className="secondary" onClick={handleClear}>Clear Results</button>
+      {/* Table of Uploads */}
+      <div className="glass-panel p-6">
+        <div className="flex justify-between items-center" style={{ marginBottom: '1rem' }}>
+          <h2>Recent Uploads</h2>
+          {uploads.length > 0 && (
+            <button className="secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }} onClick={clearHistory}>
+              Clear History
+            </button>
+          )}
+        </div>
+
+        {uploads.length === 0 ? (
+          <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>No uploads yet. Submit an image above to get started.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-color)' }}>
+                  <th style={{ padding: '1rem' }}>Date</th>
+                  <th style={{ padding: '1rem' }}>Image</th>
+                  <th style={{ padding: '1rem' }}>Title / ID</th>
+                  <th style={{ padding: '1rem' }}>Task ID</th>
+                  <th style={{ padding: '1rem' }}>Status</th>
+                  <th style={{ padding: '1rem' }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploads.map((upload, index) => (
+                  <tr key={index} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', verticalAlign: 'middle' }}>
+                    <td style={{ padding: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>{upload.timestamp}</td>
+                    <td style={{ padding: '1rem' }}>
+                      <img 
+                        src={upload.imageUrl} 
+                        alt="Thumbnail" 
+                        style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '4px' }}
+                        onError={(e) => e.target.style.display = 'none'}
+                      />
+                    </td>
+                    <td style={{ padding: '1rem' }}>
+                      <div style={{ fontWeight: 'bold' }}>{upload.title}</div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{upload.id}</div>
+                    </td>
+                    <td style={{ padding: '1rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>{upload.taskId}</td>
+                    <td style={{ padding: '1rem' }}>
+                      <span style={{ 
+                        padding: '0.25rem 0.5rem', 
+                        borderRadius: '4px', 
+                        fontSize: '0.8rem',
+                        fontWeight: 'bold',
+                        background: upload.status === 'Pending' ? 'rgba(245,158,11,0.2)' : 
+                                    upload.status === 'Fetched' ? 'rgba(16,185,129,0.2)' : 
+                                    'rgba(239,68,68,0.2)',
+                        color: upload.status === 'Pending' ? 'var(--warning)' : 
+                               upload.status === 'Fetched' ? 'var(--success)' : 
+                               'var(--error)'
+                      }}>
+                        {upload.status}
+                      </span>
+                    </td>
+                    <td style={{ padding: '1rem' }}>
+                      <button 
+                        className="secondary" 
+                        style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                        onClick={() => handleFetchResults(upload)}
+                        disabled={loading || !apiKey || upload.taskId === 'N/A' || upload.status === 'Fetched'}
+                      >
+                        {upload.status === 'Fetched' ? 'Updated' : 'Fetch Updates'}
+                      </button>
+                      <details style={{ marginTop: '0.5rem' }}>
+                        <summary style={{ cursor: 'pointer', fontSize: '0.75rem', color: 'var(--accent-primary)' }}>View JSON</summary>
+                        <pre style={{ marginTop: '0.5rem', fontSize: '0.7rem', maxHeight: '100px' }}>
+                          <code>{JSON.stringify(upload.result, null, 2)}</code>
+                        </pre>
+                      </details>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
